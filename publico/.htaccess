@@ -1,0 +1,39 @@
+# =====================================================================
+# Portal Público — Configuración Apache
+# Requiere que el Dockerfile habilite: mod_rewrite, mod_deflate,
+# mod_expires, mod_headers y AllowOverride All.
+# =====================================================================
+
+# --- Protección del directorio data/ ---
+RewriteEngine On
+RewriteRule ^data/ - [F,L]
+
+# --- Headers de seguridad ---
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# --- Compresión gzip ---
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/css
+    AddOutputFilterByType DEFLATE application/javascript application/json
+</IfModule>
+
+# --- Caché de assets estáticos (red local: 1 semana) ---
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType image/jpeg        "access plus 1 week"
+    ExpiresByType image/png         "access plus 1 week"
+    ExpiresByType image/webp        "access plus 1 week"
+    ExpiresByType image/gif         "access plus 1 week"
+    ExpiresByType audio/mpeg        "access plus 1 week"
+    ExpiresByType audio/mp4         "access plus 1 week"
+    ExpiresByType audio/ogg         "access plus 1 week"
+    ExpiresByType video/mp4         "access plus 1 week"
+    ExpiresByType video/webm        "access plus 1 week"
+    ExpiresByType text/css          "access plus 1 day"
+    ExpiresByType application/javascript "access plus 1 day"
+</IfModule>

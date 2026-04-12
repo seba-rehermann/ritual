@@ -1,0 +1,1089 @@
+================================================================================
+  REPORTE COMPLETO DE AUDITORÍA — PROYECTO RITUAL
+  Fecha: 12 de abril de 2026
+  Scope: Todos los archivos PHP, JS, CSS inline, Docker, configuraciones
+================================================================================
+
+Este documento registra cada problema encontrado durante la auditoría de
+seguridad, calidad de código y rendimiento, junto con el código exacto antes
+y después de cada corrección. Los cambios ya fueron aplicados al proyecto.
+
+Para activar todos los cambios de Docker ejecutar UNA VEZ:
+  docker-compose down && docker-compose build && docker-compose up -d
+
+================================================================================
+  ÍNDICE
+================================================================================
+
+  CRÍTICO
+    #1  Token de Telegram hardcodeado en el código fuente
+    #2  Contraseña maestra inyectada en el HTML renderizado
+    #3  unserialize() sobre archivo no confiable — PHP Object Injection
+    #4  Directorio data/ accesible públicamente vía HTTP
+    #5  test.php expuesto en producción
+    #6  YouTube IDs sin escapado HTML — XSS potencial
+
+  MEDIO — Errores lógicos y código defectuoso
+    #7  Sin headers de seguridad HTTP
+    #8  Sin token CSRF en el formulario de chat
+    #9  Sin rate limiting en el chat
+    #10 Geolocalización vía HTTP (no HTTPS) y bloqueante
+    #11 Link al admin apuntaba a puerto incorrecto (IP hardcodeada)
+    #12 Variable $pass_input_html creada pero nunca usada
+    #13 Limpieza de slug innecesaria con explode('?', ...)
+    #14 Workaround de rutas absolutas solo en rape.php — inconsistencia
+    #15 URL del canal de YouTube hardcodeada ignorando variable de config
+    #16 Doble verificación de contraseña redundante en medicina_handle_post()
+
+  BAJO — Código muerto y archivos huérfanos
+    #17 admin/avisar_play.php — archivo huérfano no llamado por nadie
+    #18 admin-gate-toggle.js — no incluido en ninguna página
+    #19 medicina-pass-sync.js — no incluido en ninguna página
+    #20 $servidor_ip en config.php — variable sin uso
+    #21 borrar_todo.sh referencia carpeta voces/ que no existe
+
+  DOCKER E INFRAESTRUCTURA
+    #22 Sin Dockerfile — imagen vanilla sin módulos Apache necesarios
+    #23 Sin healthcheck en los contenedores
+    #24 memory_limit = 256M excesivo para la aplicación
+
+  RENDIMIENTO
+    #25 Sin compresión gzip ni headers de caché
+    #26 Sin lazy loading en imágenes
+    #27 Loop requestAnimationFrame activo aunque no haya audio
+    #28 Chat: archivo leído completo sin límite de mensajes
+    #29 Fuente 'Lora' declarada pero nunca cargada
+
+  NOTA: Un cambio no pudo aplicarse directamente
+    #30 borrar_todo.sh — instrucción de corrección manual
+
+================================================================================
+  DETALLE DE CADA PROBLEMA CON CÓDIGO ANTES/DESPUÉS
+================================================================================
+
+--------------------------------------------------------------------------------
+#1  CRÍTICO — TOKEN DE TELEGRAM REAL HARDCODEADO EN EL CÓDIGO FUENTE
+    Archivos afectados: admin/config.php  publico/config.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El token real del bot de Telegram y el chat ID estaban como fallback en el
+  código fuente. Si el proyecto se sube a un repositorio git o se comparte,
+  esas credenciales quedan expuestas de inmediato y cualquiera puede usarlas
+  para espiar notificaciones o enviar mensajes al bot.
+
+CÓDIGO ANTES:
+  $bot_token = getenv('TELEGRAM_BOT_TOKEN') ?: '8593702424:AAFjUIVApmodOQIYezoL_DxZbkD8T-ncFbA';
+  $chat_id   = getenv('TELEGRAM_CHAT_ID')   ?: '6997945968';
+
+CÓDIGO DESPUÉS (admin/config.php y publico/config.php):
+  /**
+   * Configuración y secretos.
+   * Definir las variables de entorno en docker-compose.yml (sección environment:)
+   * para no hardcodear valores reales en el código.
+   *
+   * Variables de entorno disponibles:
+   *   SEBAJI_YOUTUBE_CANAL_URL   — URL del canal de YouTube
+   *   SEBAJI_ADMIN_PASSWORD      — Contraseña del panel admin
+   *   TELEGRAM_BOT_TOKEN         — Token del bot de Telegram
+   *   TELEGRAM_CHAT_ID           — Chat ID para notificaciones
+   */
+
+  $nombre_sitio = 'Sebaji';
+
+  $enlace_youtube_canal = getenv('SEBAJI_YOUTUBE_CANAL_URL') ?: 'https://www.youtube.com/@sebajiyou';
+
+  $password_admin = getenv('SEBAJI_ADMIN_PASSWORD') ?: 'ritual';
+
+  $bot_token = getenv('TELEGRAM_BOT_TOKEN') ?: '';   // <-- vacío, no token real
+  $chat_id   = getenv('TELEGRAM_CHAT_ID')   ?: '';   // <-- vacío, no ID real
+
+  /**
+   * Notifica por Telegram. No hace nada si no hay credenciales configuradas.
+   */
+  function avisarTelegram(string $msg, string $token, string $id): void
+  {
+      if ($token === '' || $id === '') {
+          return;
+      }
+      $cmd = 'curl -s -X POST https://api.telegram.org/bot' . $token
+           . '/sendMessage -d chat_id=' . $id
+           . ' -d text=' . escapeshellarg($msg);
+      exec($cmd . ' > /dev/null &');
+  }
+
+PARA REACTIVAR LAS NOTIFICACIONES:
+  Agregar en docker-compose.yml, bajo cada servicio:
+    environment:
+      - TELEGRAM_BOT_TOKEN=tu_token_aqui
+      - TELEGRAM_CHAT_ID=tu_chat_id_aqui
+      - SEBAJI_ADMIN_PASSWORD=una_clave_segura
+
+CAMBIOS ADICIONALES EN ESTE ARCHIVO:
+  - Eliminada la variable $servidor_ip = 'localhost' (nunca fue usada en
+    ningún archivo PHP del proyecto).
+
+--------------------------------------------------------------------------------
+#2  CRÍTICO — CONTRASEÑA MAESTRA INYECTADA EN EL HTML RENDERIZADO
+    Archivos afectados: admin/editar_medicina.php  admin/medicina_admin_inc.php
+                        admin/medicina_page_lib.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La contraseña del panel admin aparecía en texto plano en el HTML de la
+  página editar_medicina.php. Cualquier usuario con "Ver código fuente" o
+  DevTools podía leerla. La causa raíz era un doble sistema de autenticación:
+  una correcta (sesión PHP) y una innecesaria (contraseña en hidden inputs).
+
+CÓDIGO ANTES en admin/editar_medicina.php (línea 77):
+  ob_start();
+  include __DIR__ . '/medicina_admin_inc.php';
+  $html = ob_get_clean();
+  // Inyectamos la clave automáticamente para que no la pida
+  echo str_replace('name="pass"', 'name="pass" value="'.$password_admin.'" style="display:none"', $html);
+
+  // Y también en línea 41 (variable que ni siquiera se usaba):
+  $pass_input_html = '<input type="hidden" name="pass" value="' . htmlspecialchars($password_admin) . '">';
+
+CÓDIGO ANTES en admin/medicina_admin_inc.php (líneas 16 y 22, 45, 59, 94):
+  <div class="admin-master-pass-wrap" style="display:none;">
+      <input type="password" name="pass" value="<?php echo $password_admin; ?>">
+  </div>
+  // ...y en cada formulario:
+  <input type="hidden" name="pass" value="<?php echo $password_admin; ?>">
+
+CÓDIGO ANTES en admin/medicina_page_lib.php — función medicina_handle_post():
+  function medicina_handle_post(string $slug, string $pass_expected, string $redirectBase): array
+  {
+      // ...
+      if (!isset($_POST['pass']) || $_POST['pass'] !== $pass_expected) {
+          return ['err' => 'Contraseña incorrecta.'];
+      }
+      // ...
+
+CÓDIGO DESPUÉS en admin/editar_medicina.php:
+  // El include ahora es directo — sin ob_start, sin str_replace, sin passwords
+  $postResult = medicina_handle_post($medicina_slug, 'editar_medicina.php?slug=' . $medicina_slug);
+  // ...
+        <div class="admin-area">
+            <?php include __DIR__ . '/medicina_admin_inc.php'; ?>
+        </div>
+
+CÓDIGO DESPUÉS en admin/medicina_admin_inc.php:
+  // Todos los <input type="hidden" name="pass"> eliminados
+  // Los formularios solo envían los datos de contenido, sin contraseña
+  <form action="<?php echo $medicina_script; ?>" method="post" class="admin-form-wide">
+      <input type="hidden" name="<?php echo $medicina_post_field; ?>" value="1">
+      <input type="hidden" name="medicina_action" value="save_texts">
+      <label>Párrafo 1:</label>
+      <textarea name="intro_0" ...>...</textarea>
+      ...
+      <button type="submit">GUARDAR TEXTOS</button>
+  </form>
+
+CÓDIGO DESPUÉS en admin/medicina_page_lib.php — función medicina_handle_post():
+  // Firma simplificada: se eliminó el parámetro $pass_expected
+  function medicina_handle_post(string $slug, string $redirectBase): array
+  {
+      $field = $slug === 'rape' ? 'medicina_post_rape' : 'medicina_post_ayahuasca';
+      if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_POST[$field])) {
+          return [];
+      }
+      // Sin verificación de contraseña — la sesión ya fue verificada
+      // en editar_medicina.php antes de llegar aquí
+      $action = isset($_POST['medicina_action']) ? (string) $_POST['medicina_action'] : '';
+      // ...
+
+NOTA: La autenticación sigue siendo segura porque editar_medicina.php verifica
+  la sesión al comienzo del archivo antes de ejecutar cualquier lógica.
+
+--------------------------------------------------------------------------------
+#3  CRÍTICO — unserialize() SOBRE ARCHIVO NO CONFIABLE — PHP OBJECT INJECTION
+    Archivo afectado: publico/index.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  presencia.txt estaba montado dentro del webroot y era legible vía HTTP.
+  Si un atacante podía modificar ese archivo (o encontrar otro vector de
+  escritura), PHP Object Injection permitiría ejecutar código arbitrario al
+  hacer unserialize() sobre datos controlados por el atacante.
+  El operador @ sobre la llamada silenciaba cualquier error, ocultando el problema.
+
+CÓDIGO ANTES:
+  $ips = file_exists($presencia_file) ? (unserialize(@file_get_contents($presencia_file)) ?: []) : [];
+  // ...al final:
+  @file_put_contents($presencia_file, serialize($ips));
+
+CÓDIGO DESPUÉS:
+  $ips = [];
+  if (file_exists($presencia_file)) {
+      $raw_presencia = file_get_contents($presencia_file);
+      $decoded = $raw_presencia !== false ? json_decode($raw_presencia, true) : null;
+      $ips = is_array($decoded) ? $decoded : [];
+  }
+  // ...al final:
+  @file_put_contents($presencia_file, json_encode($ips));
+
+NOTA: El archivo presencia.txt existente tenía formato serializado. Al cambiar
+  a JSON, la primera carga lo descarta limpiamente y empieza con array vacío.
+  El tracking de presencia se recupera automáticamente en la misma visita.
+
+--------------------------------------------------------------------------------
+#4  CRÍTICO — DIRECTORIO data/ ACCESIBLE PÚBLICAMENTE VÍA HTTP
+    Archivos creados: publico/.htaccess  admin/.htaccess
+    Archivo creado:   Dockerfile  docker/apache.conf
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  Los archivos en data/ eran descargables directamente por cualquier navegador:
+    http://[ip]:8081/data/presencia.txt  — IPs y timestamps de visitantes
+    http://[ip]:8081/data/mensajes.txt   — mensajes del chat
+    http://[ip]:8081/data/medicina_*.json — contenido editable del sitio
+    http://[ip]:8081/data/borrar_todo.sh  — script con rutas internas del servidor
+  La imagen php:8.2-apache trae AllowOverride None por defecto, por lo que
+  los .htaccess no funcionaban sin un Dockerfile que lo corrija.
+
+SOLUCIÓN — Archivo NUEVO: Dockerfile
+  FROM php:8.2-apache
+
+  # Habilitar módulos Apache necesarios
+  RUN a2enmod rewrite deflate expires headers
+
+  # Copiar configuración personalizada que activa AllowOverride
+  COPY docker/apache.conf /etc/apache2/conf-available/ritual.conf
+  RUN a2enconf ritual
+
+  EXPOSE 80
+
+SOLUCIÓN — Archivo NUEVO: docker/apache.conf
+  # Permite que los .htaccess de cada contenedor tengan efecto
+  # y desactiva el listado de directorios en todo el webroot.
+  <Directory /var/www/html>
+      AllowOverride All
+      Options -Indexes
+  </Directory>
+
+SOLUCIÓN — publico/.htaccess y admin/.htaccess (regla de bloqueo de data/):
+  # CÓDIGO NUEVO (no existía .htaccess antes):
+  RewriteEngine On
+  RewriteRule ^data/ - [F,L]
+
+  Cualquier petición HTTP a data/* devuelve 403 Forbidden.
+  PHP puede seguir leyendo/escribiendo los archivos vía filesystem normalmente.
+
+ACTUALIZACIÓN en docker-compose.yml:
+  ANTES:
+    web_publica:
+      image: php:8.2-apache
+  DESPUÉS:
+    web_publica:
+      build: .   # usa el Dockerfile del directorio raíz
+
+--------------------------------------------------------------------------------
+#5  CRÍTICO — test.php EXPUESTO EN PRODUCCIÓN
+    Archivo eliminado: publico/test.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El archivo era accesible públicamente y mostraba las rutas internas del
+  filesystem y el contenido crudo del JSON de la base de datos.
+
+CÓDIGO QUE EXISTÍA (publico/test.php):
+  <?php
+  require_once __DIR__ . '/config.php';
+  require_once __DIR__ . '/medicina_page_lib.php';
+  $data = medicina_page_load('rape');
+  echo "<h2>Rutas crudas de la BD:</h2><pre>";
+  foreach ($data['items'] as $row) {
+      echo htmlspecialchars($row['path']) . "\n";
+  }
+  echo "</pre>";
+  ?>
+
+SOLUCIÓN: Archivo eliminado.
+
+--------------------------------------------------------------------------------
+#6  CRÍTICO — YouTube IDs SIN ESCAPADO HTML — XSS POTENCIAL
+    Archivo afectado: publico/index.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  Los IDs de YouTube leídos del archivo youtube_links.txt se interpolaban
+  directamente en el HTML sin htmlspecialchars(). Si un ID malicioso llegaba
+  al archivo (ej: escrito por el admin con un payload inyectado), podía
+  ejecutar JavaScript en la página pública.
+
+CÓDIGO ANTES:
+  foreach ($links as $id) {
+      echo '<div class="video-item"><a href="https://youtube.com/watch?v=' . trim($id) . '" target="_blank"><img src="https://img.youtube.com/vi/' . trim($id) . '/hqdefault.jpg"></a></div>';
+  }
+
+CÓDIGO DESPUÉS:
+  foreach ($links as $id) {
+      $vid = htmlspecialchars(trim($id), ENT_QUOTES, 'UTF-8');
+      echo '<div class="video-item"><a href="https://youtube.com/watch?v=' . $vid . '" target="_blank" rel="noopener">'
+         . '<img src="https://img.youtube.com/vi/' . $vid . '/hqdefault.jpg" loading="lazy" alt="Video"></a></div>';
+  }
+
+  (Además se aprovechó para agregar loading="lazy" y rel="noopener".)
+
+--------------------------------------------------------------------------------
+#7  MEDIO — SIN HEADERS DE SEGURIDAD HTTP
+    Archivos creados: publico/.htaccess  admin/.htaccess
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  Ningún archivo ni configuración de Apache emitía headers de seguridad.
+  Sin ellos el navegador no tiene instrucciones de protección básicas contra
+  clickjacking, sniffing de MIME types, XSS, etc.
+
+CÓDIGO ANTES: (no existía .htaccess)
+
+CÓDIGO DESPUÉS en publico/.htaccess y admin/.htaccess:
+  <IfModule mod_headers.c>
+      Header always set X-Content-Type-Options "nosniff"
+      Header always set X-Frame-Options "SAMEORIGIN"
+      Header always set X-XSS-Protection "1; mode=block"
+      Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  </IfModule>
+
+  Nota: el portal admin usa X-Frame-Options "DENY" (más restrictivo) ya que
+  el panel admin no necesita ser embebido en ningún contexto.
+
+--------------------------------------------------------------------------------
+#8  MEDIO — SIN TOKEN CSRF EN EL FORMULARIO DE CHAT
+    Archivo afectado: publico/index.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El formulario de chat (send_msg) no tenía protección CSRF. Cualquier sitio
+  externo podía enviar un POST forjado al chat. El formulario de notificación
+  de reproducción sí tenía token — había inconsistencia en el mismo archivo.
+
+CÓDIGO ANTES:
+  // Al inicio:
+  if (empty($_SESSION['play_notif_token'])) {
+      $_SESSION['play_notif_token'] = bin2hex(random_bytes(16));
+  }
+  // Solo el form de play tenía token, el de chat no:
+  <form action="index.php" method="post" style="display: flex; flex-direction: column; gap: 8px;">
+      <input type="text" name="chat_name" placeholder="Tu nombre" required>
+      <input type="text" name="chat_msg" placeholder="Comparte tu sentir..." required>
+      <input type="submit" name="send_msg" value="Elevar Pensamiento" class="btn">
+  </form>
+
+CÓDIGO DESPUÉS:
+  // Al inicio del archivo, junto al token de play:
+  if (empty($_SESSION['chat_csrf_token'])) {
+      $_SESSION['chat_csrf_token'] = bin2hex(random_bytes(16));
+  }
+
+  // En el manejador POST del chat:
+  if (isset($_POST['send_msg'])) {
+      $csrf_ok = isset($_POST['chat_csrf_token'])
+          && hash_equals($_SESSION['chat_csrf_token'], (string) $_POST['chat_csrf_token']);
+
+      if (!$csrf_ok) {
+          header('Location: index.php#chat-box');
+          exit;
+      }
+      // ... resto del procesamiento
+  }
+
+  // En el formulario HTML:
+  <form action="index.php" method="post" style="display: flex; flex-direction: column; gap: 8px;">
+      <input type="hidden" name="chat_csrf_token" value="<?php echo $_SESSION['chat_csrf_token']; ?>">
+      <input type="text" name="chat_name" placeholder="Tu nombre" maxlength="50" required>
+      <input type="text" name="chat_msg" placeholder="Comparte tu sentir..." maxlength="300" required>
+      <input type="submit" name="send_msg" value="Elevar Pensamiento" class="btn">
+  </form>
+
+--------------------------------------------------------------------------------
+#9  MEDIO — SIN RATE LIMITING EN EL CHAT
+    Archivo afectado: publico/index.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  Un usuario podía enviar mensajes al chat sin ningún límite, llenando el
+  archivo mensajes.txt hasta agotar el espacio en disco del contenedor.
+
+CÓDIGO ANTES:
+  if (isset($_POST['send_msg'])) {
+      $nombre = htmlspecialchars($_POST['chat_name'] ?? '');
+      $texto = htmlspecialchars($_POST['chat_msg'] ?? '');
+      if (!empty($nombre) && !empty($texto)) {
+          $linea = "<div class='msg'><b>$nombre:</b> $texto</div>" . PHP_EOL;
+          file_put_contents($chat_file, $linea, FILE_APPEND);
+          // Sin límite de longitud, sin rate limiting
+      }
+  }
+
+CÓDIGO DESPUÉS:
+  if (isset($_POST['send_msg'])) {
+      $csrf_ok = isset($_POST['chat_csrf_token'])
+          && hash_equals($_SESSION['chat_csrf_token'], (string) $_POST['chat_csrf_token']);
+
+      if (!$csrf_ok) {
+          header('Location: index.php#chat-box');
+          exit;
+      }
+
+      // Rate limiting: máximo 1 mensaje cada 15 segundos por sesión
+      $last_msg_time = $_SESSION['last_chat_time'] ?? 0;
+      if (time() - $last_msg_time < 15) {
+          header('Location: index.php#chat-box');
+          exit;
+      }
+
+      $nombre = htmlspecialchars(trim($_POST['chat_name'] ?? ''), ENT_QUOTES, 'UTF-8');
+      $texto  = htmlspecialchars(trim($_POST['chat_msg']  ?? ''), ENT_QUOTES, 'UTF-8');
+
+      if ($nombre !== '' && $texto !== '') {
+          // Limitar longitud de nombre y mensaje
+          $nombre = mb_substr($nombre, 0, 50);
+          $texto  = mb_substr($texto, 0, 300);
+
+          $linea = "<div class='msg'><b>" . $nombre . ":</b> " . $texto . "</div>" . PHP_EOL;
+          file_put_contents($chat_file, $linea, FILE_APPEND);
+          $_SESSION['last_chat_time'] = time();
+          avisarTelegram("💬 $nombre: $texto", $bot_token, $chat_id);
+          header('Location: index.php#chat-box');
+          exit;
+      }
+  }
+
+--------------------------------------------------------------------------------
+#10 MEDIO — GEOLOCALIZACIÓN HTTP (NO HTTPS) Y BLOQUEANTE
+    Archivo afectado: publico/index.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La llamada a ip-api.com usaba HTTP sin TLS. Además era una llamada bloqueante
+  (file_get_contents) en el hilo principal, ralentizando la carga de página para
+  cada visitante nuevo. En red local todas las IPs son privadas y el bloque
+  nunca se ejecuta, pero el código tocaba la rama antes de saberlo.
+
+CÓDIGO ANTES:
+  $geo_json = @file_get_contents('http://ip-api.com/json/' . $ip_visitante);
+
+CÓDIGO DESPUÉS:
+  $geo_info = 'Red Local';
+  if (filter_var($ip_visitante, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+      $geo_info = 'Desconocida';
+      $geo_json = @file_get_contents('https://ip-api.com/json/' . $ip_visitante);  // <-- https://
+      if ($geo_json) {
+          $geo_data = json_decode($geo_json);
+          if ($geo_data && $geo_data->status === 'success') {
+              $geo_info = $geo_data->city . ', ' . $geo_data->country;
+          }
+      }
+  }
+  // Para IPs privadas (red local) se saltea toda la llamada externa.
+
+--------------------------------------------------------------------------------
+#11 MEDIO — LINK AL ADMIN CON IP HARDCODEADA Y PUERTO INCORRECTO
+    Archivos afectados: publico/index.php  admin/admin_ritual.php
+--------------------------------------------------------------------------------
+
+PROBLEMA A:
+  En publico/index.php el link oculto al panel admin usaba una ruta absoluta
+  con / que apuntaba al mismo puerto (8081). El admin está en el puerto 8082,
+  por lo que el link nunca funcionaba.
+
+CÓDIGO ANTES en publico/index.php:
+  <p class="admin-gate"><a href="/admin_ritual.php" class="admin-gate-link"></a></p>
+
+CÓDIGO DESPUÉS:
+  // URL construida dinámicamente usando el hostname del request actual
+  $admin_host = explode(':', $_SERVER['HTTP_HOST'] ?? 'localhost')[0];
+  $admin_url  = 'http://' . $admin_host . ':8082/admin_ritual.php';
+  // ...
+  <p class="admin-gate">
+      <a href="<?php echo htmlspecialchars($admin_url); ?>" class="admin-gate-link"></a>
+  </p>
+
+PROBLEMA B:
+  En admin/admin_ritual.php el link "Ver la Web Pública" tenía la IP del
+  servidor hardcodeada (192.168.1.49). Si la IP cambia, se rompe.
+
+CÓDIGO ANTES en admin/admin_ritual.php:
+  <a href="http://192.168.1.49:8081" style="color: #666; text-decoration: none;">⬅ Ver la Web Pública</a>
+
+CÓDIGO DESPUÉS:
+  <?php
+  $pub_host = explode(':', $_SERVER['HTTP_HOST'] ?? 'localhost')[0];
+  $pub_url  = 'http://' . $pub_host . ':8081';
+  ?>
+  <a href="<?php echo htmlspecialchars($pub_url); ?>" style="color: #666; text-decoration: none;">⬅ Ver la Web Pública</a>
+
+--------------------------------------------------------------------------------
+#12 MEDIO — $pass_input_html CREADA PERO NUNCA USADA
+    Archivo afectado: admin/editar_medicina.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La variable se asignaba pero nunca se referenciaba en el template HTML.
+  Código muerto que además exponía la contraseña en memoria sin necesidad.
+
+CÓDIGO ANTES (línea 41):
+  $pass_input_html = '<input type="hidden" name="pass" value="' . htmlspecialchars($password_admin) . '">';
+
+CÓDIGO DESPUÉS:
+  (línea eliminada completamente)
+
+--------------------------------------------------------------------------------
+#13 MEDIO — LIMPIEZA DE SLUG INNECESARIA CON explode('?', ...)
+    Archivo afectado: admin/editar_medicina.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  PHP separa automáticamente los parámetros GET del path de la URL. Un valor
+  de $_GET['slug'] nunca puede contener '?', por lo que el explode era inútil.
+
+CÓDIGO ANTES:
+  $raw_slug = $_GET['slug'] ?? 'rape';
+  // Si el slug trae parámetros (?ok=...), nos quedamos solo con la primera parte
+  $parts = explode('?', $raw_slug);
+  $medicina_slug = $parts[0];
+  if (!in_array($medicina_slug, ['rape', 'ayahuasca'])) { ... }
+
+CÓDIGO DESPUÉS:
+  $medicina_slug = $_GET['slug'] ?? 'rape';
+  if (!in_array($medicina_slug, ['rape', 'ayahuasca'])) { ... }
+
+--------------------------------------------------------------------------------
+#14 MEDIO — WORKAROUND DE RUTAS ABSOLUTAS SOLO EN rape.php — INCONSISTENCIA
+    Archivos afectados: publico/rape.php  admin/medicina_page_lib.php
+                        publico/medicina_page_lib.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  rape.php tenía un workaround para limpiar rutas absolutas heredadas
+  (/var/www/html/...) del JSON, pero ayahuasca.php no lo tenía. La corrección
+  debía estar en la capa de la librería, no en las vistas.
+
+CÓDIGO ANTES en publico/rape.php:
+  foreach ($data['items'] as $row) {
+      // 1. Limpiamos la ruta por si viene con basura del Admin
+      $ruta_limpia = str_replace('/var/www/html/', '', $row['path']);
+      $ruta_limpia = ltrim($ruta_limpia, '/');
+
+      // 2. Verificamos si existe en la Optiplex
+      if (!is_file(__DIR__ . '/' . $ruta_limpia)) {
+          continue;
+      }
+      $src = htmlspecialchars($ruta_limpia);
+      // ...
+
+CÓDIGO DESPUÉS — La normalización se movió a medicina_sanitize_items() en la lib:
+  function medicina_sanitize_items(array $raw, string $slug): array
+  {
+      $out = [];
+      foreach ($raw as $row) {
+          // ...
+          $path = isset($row['path']) ? str_replace('\\', '/', (string) $row['path']) : '';
+
+          // Normaliza rutas absolutas heredadas (ej: /var/www/html/fotos/...)
+          if (str_starts_with($path, '/')) {
+              $path = preg_replace('#^/[^/]+/[^/]+/[^/]+/#', '', $path);
+          }
+          $path = ltrim($path, '/');
+          // ...
+
+CÓDIGO DESPUÉS en publico/rape.php (limpio, igual a ayahuasca.php):
+  foreach ($data['items'] as $row) {
+      if (!is_file(__DIR__ . '/' . $row['path'])) {
+          continue;
+      }
+      $src = htmlspecialchars($row['path'], ENT_QUOTES, 'UTF-8');
+      // ...
+
+--------------------------------------------------------------------------------
+#15 MEDIO — URL DEL CANAL DE YOUTUBE HARDCODEADA IGNORANDO VARIABLE DE CONFIG
+    Archivo afectado: publico/index.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La variable $enlace_youtube_canal existía en config.php exactamente para
+  configurar la URL del canal, pero la vista ignoraba esa variable y usaba
+  una URL hardcodeada directamente.
+
+CÓDIGO ANTES:
+  <a href="https://www.youtube.com/@sebajiyou" class="share-btn btn-yt" target="_blank" rel="noopener noreferrer">YouTube</a>
+
+CÓDIGO DESPUÉS:
+  <a href="<?php echo htmlspecialchars($enlace_youtube_canal); ?>" class="share-btn btn-yt" target="_blank" rel="noopener noreferrer">YouTube</a>
+
+  (Ahora la URL puede cambiarse en docker-compose.yml vía la variable de
+   entorno SEBAJI_YOUTUBE_CANAL_URL sin tocar el código.)
+
+--------------------------------------------------------------------------------
+#16 MEDIO — DOBLE VERIFICACIÓN DE CONTRASEÑA REDUNDANTE EN medicina_handle_post()
+    Archivos afectados: admin/medicina_page_lib.php  publico/medicina_page_lib.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  editar_medicina.php ya verificaba la sesión al principio del archivo.
+  Luego pasaba $password_admin como parámetro a medicina_handle_post() que
+  hacía una segunda verificación comparando $_POST['pass'] con la contraseña.
+  Esta redundancia era la causa raíz de que la contraseña tuviera que viajar
+  en hidden inputs expuestos en el HTML (problema #2).
+
+CÓDIGO ANTES — firma de la función:
+  function medicina_handle_post(string $slug, string $pass_expected, string $redirectBase): array
+  {
+      // ...
+      if (!isset($_POST['pass']) || $_POST['pass'] !== $pass_expected) {
+          return ['err' => 'Contraseña incorrecta.'];
+      }
+      // ...
+  }
+
+CÓDIGO ANTES — llamada desde editar_medicina.php:
+  $postResult = medicina_handle_post($medicina_slug, $password_admin, 'editar_medicina.php?slug=' . $medicina_slug);
+
+CÓDIGO DESPUÉS — firma simplificada:
+  function medicina_handle_post(string $slug, string $redirectBase): array
+  {
+      $field = $slug === 'rape' ? 'medicina_post_rape' : 'medicina_post_ayahuasca';
+      if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_POST[$field])) {
+          return [];
+      }
+      // Sin verificación de contraseña POST — la sesión ya fue validada
+      $action = isset($_POST['medicina_action']) ? (string) $_POST['medicina_action'] : '';
+      // ...
+  }
+
+CÓDIGO DESPUÉS — llamada desde editar_medicina.php:
+  $postResult = medicina_handle_post($medicina_slug, 'editar_medicina.php?slug=' . $medicina_slug);
+
+--------------------------------------------------------------------------------
+#17 BAJO — admin/avisar_play.php — ARCHIVO HUÉRFANO
+    Archivo eliminado: admin/avisar_play.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El reproductor envía notificaciones de play a index.php (mismo archivo, en
+  el contenedor público), no a avisar_play.php. El archivo nunca era llamado
+  por ningún código actual del proyecto.
+
+CÓDIGO QUE EXISTÍA (avisar_play.php — ya no existe):
+  // Verificaba sesión, token, cooldown y llamaba avisarTelegram.
+  // Funcionalmente correcto, pero completamente inalcanzable.
+
+SOLUCIÓN: Archivo eliminado.
+
+--------------------------------------------------------------------------------
+#18 BAJO — admin-gate-toggle.js — NO INCLUIDO EN NINGUNA PÁGINA
+    Archivo eliminado: publico/js/admin-gate-toggle.js
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  Ningún archivo PHP hacía <script src="js/admin-gate-toggle.js">. El archivo
+  existía en el directorio pero nunca se cargaba en ningún contexto.
+
+SOLUCIÓN: Archivo eliminado.
+
+--------------------------------------------------------------------------------
+#19 BAJO — medicina-pass-sync.js — NO INCLUIDO EN NINGUNA PÁGINA
+    Archivo eliminado: publico/js/medicina-pass-sync.js
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El script buscaba elementos script[data-medicina-pass-sync][data-pass-id]
+  que ningún PHP generaba. Código doblemente huérfano: no incluido Y sin
+  elementos que activaran su lógica.
+
+SOLUCIÓN: Archivo eliminado.
+
+--------------------------------------------------------------------------------
+#20 BAJO — $servidor_ip EN config.php — VARIABLE SIN USO
+    Archivos afectados: admin/config.php  publico/config.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La variable $servidor_ip = 'localhost' estaba definida en config.php pero
+  no era referenciada en ningún archivo PHP del proyecto.
+
+CÓDIGO ANTES:
+  $servidor_ip = 'localhost';
+
+CÓDIGO DESPUÉS:
+  (línea eliminada completamente)
+
+--------------------------------------------------------------------------------
+#21 BAJO — borrar_todo.sh REFERENCIA CARPETA voces/ QUE NO EXISTE
+    Archivo: compartido/data/borrar_todo.sh
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El script de limpieza intentaba borrar /var/www/html/voces/* pero esa
+  carpeta no existe en el proyecto actual. Es código de una versión anterior.
+
+CÓDIGO ANTES (líneas problemáticas):
+  # 2. Borrar todos los videos de la carpeta voces
+  rm -rf /var/www/html/voces/*
+  echo "Las ofrendas de video han sido entregadas al olvido."
+
+  # 3. Asegurar que PHP pueda seguir escribiendo mañana
+  chown -R www-data:www-data /var/www/html/voces
+  chmod 775 /var/www/html/voces
+
+ESTADO: Este archivo no pudo editarse directamente (es propiedad del proceso
+Docker, uid www-data). Para corregirlo ejecutar dentro del contenedor:
+
+  docker exec portal_publico bash -c "cat > /var/www/html/data/borrar_todo.sh << 'EOF'
+  #!/bin/bash
+  # Limpieza manual de mensajes del chat
+  > /var/www/html/data/mensajes.txt
+  echo \"Mensajes vaciados.\"
+  chown www-data:www-data /var/www/html/data/mensajes.txt
+  chmod 666 /var/www/html/data/mensajes.txt
+  echo \"Limpieza completada.\"
+  EOF"
+
+--------------------------------------------------------------------------------
+#22 DOCKER — SIN Dockerfile: MÓDULOS APACHE INACTIVOS
+    Archivos creados: Dockerfile  docker/apache.conf
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La imagen php:8.2-apache tiene AllowOverride None por defecto y no tiene
+  habilitados mod_deflate, mod_expires, mod_headers ni mod_rewrite. Esto
+  impedía que los .htaccess funcionaran y que hubiera compresión o caché.
+
+CÓDIGO ANTES en docker-compose.yml:
+  web_publica:
+    image: php:8.2-apache
+    ...
+  web_admin:
+    image: php:8.2-apache
+    ...
+
+CÓDIGO DESPUÉS en docker-compose.yml:
+  web_publica:
+    build: .     # construye desde el Dockerfile del directorio raíz
+    ...
+  web_admin:
+    build: .
+    ...
+
+ARCHIVO NUEVO Dockerfile:
+  FROM php:8.2-apache
+
+  RUN a2enmod rewrite deflate expires headers
+
+  COPY docker/apache.conf /etc/apache2/conf-available/ritual.conf
+  RUN a2enconf ritual
+
+  EXPOSE 80
+
+ARCHIVO NUEVO docker/apache.conf:
+  <Directory /var/www/html>
+      AllowOverride All
+      Options -Indexes
+  </Directory>
+
+--------------------------------------------------------------------------------
+#23 DOCKER — SIN HEALTHCHECK EN LOS CONTENEDORES
+    Archivo afectado: docker-compose.yml
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  Si un contenedor entraba en estado zombie (proceso corriendo sin responder),
+  Docker no lo detectaba ni reiniciaba. Sin healthcheck no hay monitoreo.
+
+CÓDIGO ANTES:
+  web_publica:
+    image: php:8.2-apache
+    restart: unless-stopped
+    # sin healthcheck
+
+CÓDIGO DESPUÉS:
+  web_publica:
+    build: .
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/index.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  web_admin:
+    build: .
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/admin_ritual.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+--------------------------------------------------------------------------------
+#24 DOCKER — memory_limit = 256M EXCESIVO
+    Archivos afectados: admin/mis_ajustes.ini  publico/mis_ajustes.ini
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La aplicación solo lee archivos JSON y texto plano. 256MB de memory limit
+  es innecesario y puede ocultar memory leaks reales.
+
+CÓDIGO ANTES:
+  memory_limit = 256M
+
+CÓDIGO DESPUÉS:
+  memory_limit = 64M
+
+  (64M es más que suficiente para todas las operaciones del proyecto.)
+
+--------------------------------------------------------------------------------
+#25 RENDIMIENTO — SIN COMPRESIÓN GZIP NI HEADERS DE CACHÉ
+    Archivos creados: publico/.htaccess  admin/.htaccess
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  HTML, CSS y JavaScript se servían sin comprimir y sin headers de caché.
+  El navegador descargaba todo de nuevo en cada visita aunque nada hubiera
+  cambiado. En red local el impacto es bajo pero innecesario.
+
+CÓDIGO ANTES: (no existía .htaccess)
+
+CÓDIGO DESPUÉS en publico/.htaccess y admin/.htaccess:
+  # Compresión gzip
+  <IfModule mod_deflate.c>
+      AddOutputFilterByType DEFLATE text/html text/plain text/css
+      AddOutputFilterByType DEFLATE application/javascript application/json
+  </IfModule>
+
+  # Caché de assets estáticos (red local: 1 semana)
+  <IfModule mod_expires.c>
+      ExpiresActive On
+      ExpiresByType image/jpeg        "access plus 1 week"
+      ExpiresByType image/png         "access plus 1 week"
+      ExpiresByType image/webp        "access plus 1 week"
+      ExpiresByType image/gif         "access plus 1 week"
+      ExpiresByType audio/mpeg        "access plus 1 week"
+      ExpiresByType audio/mp4         "access plus 1 week"
+      ExpiresByType audio/ogg         "access plus 1 week"
+      ExpiresByType video/mp4         "access plus 1 week"
+      ExpiresByType video/webm        "access plus 1 week"
+      ExpiresByType text/css          "access plus 1 day"
+      ExpiresByType application/javascript "access plus 1 day"
+  </IfModule>
+
+  Los assets de audio, imagen y video se sirven cacheados durante 1 semana.
+  El navegador no los volverá a pedir hasta que expiren.
+
+--------------------------------------------------------------------------------
+#26 RENDIMIENTO — IMÁGENES SIN lazy loading
+    Archivos afectados: publico/index.php  publico/rape.php
+                        publico/ayahuasca.php  admin/medicina_admin_inc.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  Todas las imágenes de la galería y del grid de YouTube se cargaban al mismo
+  tiempo, aunque estuvieran fuera del viewport. Esto bloqueaba la renderización
+  inicial de la página.
+
+CÓDIGO ANTES:
+  echo "<img src='$file'>";
+  echo "<img src=\"$src\">";
+  <img src="https://img.youtube.com/vi/..." >
+
+CÓDIGO DESPUÉS:
+  echo "<img src='$src' loading='lazy' alt=''>";
+  echo "<img src=\"$src\" loading=\"lazy\" alt=\"\">";
+  <img src="https://img.youtube.com/vi/..." loading="lazy" alt="Video">
+
+  El atributo loading="lazy" instruye al navegador a cargar la imagen solo
+  cuando el usuario se acerca a ella al hacer scroll.
+
+--------------------------------------------------------------------------------
+#27 RENDIMIENTO — LOOP requestAnimationFrame ACTIVO SIN AUDIO
+    Archivo afectado: publico/js/index-player.js
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  La función draw() llamaba requestAnimationFrame(draw) en un loop infinito
+  desde el momento en que se inicializaba el contexto de audio (al tocar una
+  pista por primera vez). El canvas repintaba 60 veces por segundo aunque
+  el audio estuviera pausado, consumiendo CPU innecesariamente.
+
+CÓDIGO ANTES:
+  function initAudio() {
+      if (audioCtx) return;
+      // ...
+      draw();  // <-- iniciaba el loop inmediatamente
+  }
+
+  function draw() {
+      requestAnimationFrame(draw);  // <-- loop infinito sin control
+      if (!analyser) return;
+      // ...pintado del canvas...
+  }
+
+CÓDIGO DESPUÉS:
+  var rafId = null;  // <-- ID del frame actual para poder cancelarlo
+
+  function draw() {
+      rafId = requestAnimationFrame(draw);
+      // ...pintado del canvas...
+  }
+
+  function startVisualizerLoop() {
+      if (!analyser || rafId !== null) return;
+      draw();  // inicia solo cuando se llama explícitamente
+  }
+
+  function stopVisualizerLoop() {
+      if (rafId !== null) {
+          cancelAnimationFrame(rafId);  // cancela el frame pendiente
+          rafId = null;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);  // limpia el canvas
+      }
+  }
+
+  // El loop solo corre cuando el audio está reproduciéndose:
+  player.addEventListener('play',   startVisualizerLoop);
+  player.addEventListener('pause',  stopVisualizerLoop);
+  player.addEventListener('ended',  stopVisualizerLoop);
+
+  // initAudio() ya no llama draw() directamente:
+  function initAudio() {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      source = audioCtx.createMediaElementSource(player);
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      analyser.fftSize = 64;
+      // <-- sin draw() aquí
+  }
+
+--------------------------------------------------------------------------------
+#28 RENDIMIENTO — CHAT: ARCHIVO LEÍDO COMPLETO SIN LÍMITE
+    Archivo afectado: publico/index.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El archivo mensajes.txt se leía completo y se volcaba al DOM. Si el chat
+  tenía muchos mensajes, la página enviaba todo ese contenido al navegador
+  en cada carga, aumentando el tiempo de carga y el tamaño del DOM.
+
+CÓDIGO ANTES:
+  <div id="chat-box"><?php if (file_exists($chat_file)) echo file_get_contents($chat_file); ?></div>
+
+CÓDIGO DESPUÉS:
+  <div id="chat-box">
+      <?php
+      if (file_exists($chat_file)) {
+          $lineas = file($chat_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+          echo implode("\n", array_slice($lineas, -50));  // solo los últimos 50
+      }
+      ?>
+  </div>
+
+  El chat muestra los últimos 50 mensajes. El archivo en disco sigue creciendo
+  y puede limpiarse manualmente con borrar_todo.sh cuando sea necesario.
+
+--------------------------------------------------------------------------------
+#29 RENDIMIENTO — FUENTE 'Lora' DECLARADA PERO NUNCA CARGADA
+    Archivo afectado: publico/ayahuasca.php
+--------------------------------------------------------------------------------
+
+PROBLEMA:
+  El CSS declaraba font-family: 'Lora', serif pero no había ningún <link> a
+  Google Fonts. En red local de todas formas no habría acceso a CDN externas.
+  El navegador siempre caía al fallback serif del sistema.
+
+CÓDIGO ANTES:
+  body { font-family: 'Lora', serif; ... }
+
+CÓDIGO DESPUÉS:
+  body { font-family: Georgia, 'Times New Roman', serif; ... }
+
+  Se usa directamente el stack serif del sistema, evitando la promesa rota
+  de una fuente que nunca iba a cargarse.
+
+================================================================================
+  RESUMEN DE ARCHIVOS MODIFICADOS
+================================================================================
+
+  NUEVOS:
+    Dockerfile
+    docker/apache.conf
+    publico/.htaccess
+    admin/.htaccess
+
+  MODIFICADOS:
+    docker-compose.yml        — build en lugar de image, healthchecks
+    admin/config.php          — sin token Telegram, sin $servidor_ip
+    publico/config.php        — idéntico a admin/config.php
+    admin/medicina_page_lib.php — sin check de contraseña POST, normalización
+                                  de rutas absolutas en sanitize_items()
+    publico/medicina_page_lib.php — idéntico a admin/medicina_page_lib.php
+    admin/editar_medicina.php  — sin ob_start/str_replace, sin $pass_input_html,
+                                  sin explode('?'), include directo
+    admin/medicina_admin_inc.php — sin hidden pass inputs, sin div de password
+    admin/admin_ritual.php     — sin IP hardcodeada
+    publico/index.php          — JSON en lugar de unserialize, CSRF, rate
+                                  limiting, YouTube escaped, admin link dinámico,
+                                  YouTube URL desde config, lazy loading,
+                                  chat limitado a 50 mensajes
+    publico/rape.php           — sin workaround de rutas, lazy loading
+    publico/ayahuasca.php      — fuente Georgia, lazy loading
+    publico/js/index-player.js — RAF solo corre con audio activo
+    admin/mis_ajustes.ini      — memory_limit 256M → 64M
+    publico/mis_ajustes.ini    — memory_limit 256M → 64M
+
+  ELIMINADOS:
+    publico/test.php
+    publico/js/admin-gate-toggle.js
+    publico/js/medicina-pass-sync.js
+    admin/avisar_play.php
+
+  NO MODIFICABLE (propiedad Docker):
+    compartido/data/borrar_todo.sh  — instrucción de corrección manual en #21
+
+================================================================================
+  PENDIENTES (acciones que requieren al usuario)
+================================================================================
+
+  1. RECONSTRUIR IMÁGENES DOCKER (necesario para activar Dockerfile, .htaccess,
+     módulos gzip/caché/headers):
+
+       cd /home/opti/proyectos/ritual
+       docker-compose down && docker-compose build && docker-compose up -d
+
+  2. CONFIGURAR CREDENCIALES DE TELEGRAM (si se quieren notificaciones):
+     Editar docker-compose.yml y agregar bajo cada servicio:
+
+       environment:
+         - TELEGRAM_BOT_TOKEN=tu_token_real_aqui
+         - TELEGRAM_CHAT_ID=tu_chat_id_aqui
+         - SEBAJI_ADMIN_PASSWORD=una_clave_segura
+
+  3. CORREGIR borrar_todo.sh (no pudo editarse por permisos Docker):
+
+       docker exec portal_publico bash -c "cat > /var/www/html/data/borrar_todo.sh << 'EOF'
+       #!/bin/bash
+       > /var/www/html/data/mensajes.txt
+       chown www-data:www-data /var/www/html/data/mensajes.txt
+       chmod 666 /var/www/html/data/mensajes.txt
+       echo \"Limpieza completada.\"
+       EOF"
+
+  4. AGREGAR URLs REALES a los botones de WhatsApp y Telegram en publico/index.php:
+
+       ANTES: <a href="#" class="share-btn btn-ws">WhatsApp</a>
+       DESPUÉS ejemplo:
+         <a href="https://wa.me/549XXXXXXXXXX" class="share-btn btn-ws" target="_blank" rel="noopener">WhatsApp</a>
+         <a href="https://t.me/tu_usuario" class="share-btn btn-tg" target="_blank" rel="noopener">Telegram</a>
+
+  5. CAMBIAR LA CONTRASEÑA POR DEFECTO 'ritual' en la variable de entorno:
+       SEBAJI_ADMIN_PASSWORD=una_clave_que_no_sea_ritual
+
+================================================================================
+  FIN DEL REPORTE
+================================================================================
