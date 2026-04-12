@@ -29,38 +29,280 @@ if (!empty($postResult['err'])) {
 
 $data = medicina_page_load($medicina_slug);
 $medicina_post_field = 'medicina_post_' . $medicina_slug;
-$medicina_script = 'editar_medicina.php?slug=' . $medicina_slug;
+$medicina_script     = 'editar_medicina.php?slug=' . $medicina_slug;
+
+// Paleta de color según la medicina
+$med_config = $medicina_slug === 'ayahuasca'
+    ? ['label' => 'Ayahuasca', 'accent' => '#4e6e5d', 'accent_bg' => 'rgba(78,110,93,0.15)', 'border' => '#2e5040', 'text' => '#d4c3a3', 'icon' => '🍃']
+    : ['label' => 'Rapé',      'accent' => '#a1887f', 'accent_bg' => 'rgba(161,136,127,0.15)', 'border' => '#5c3d2a', 'text' => '#fdf5e6', 'icon' => '🌿'];
 ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Editando <?php echo ucfirst($medicina_slug); ?></title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editando <?php echo $med_config['label']; ?> — Ritual Admin</title>
+    <link rel="stylesheet" href="admin-style.css">
     <style>
-        body { background: #0f0f0f; color: #e0e0e0; font-family: sans-serif; padding: 40px; }
-        .container { max-width: 900px; margin: auto; background: #1a1a1a; padding: 30px; border-radius: 15px; border: 1px solid #333; }
-        h1 { color: #8bae39; margin-top: 0; }
-        .back { color: #8bae39; text-decoration: none; margin-bottom: 20px; display: inline-block; font-size: 0.9em; }
-        .admin-area { margin-top: 20px; }
-        .admin-medicina { background: transparent !important; border: none !important; color: #eee !important; padding: 0 !important; }
-        .admin-sub { color: #8bae39 !important; border-bottom: 1px solid #333 !important; }
-        input, textarea { background: #000 !important; color: #fff !important; border: 1px solid #444 !important; padding: 10px !important; border-radius: 5px !important; }
-        button, .admin-inline-form button { background: #8bae39 !important; color: #000 !important; border: none !important; padding: 8px 15px !important; border-radius: 5px !important; cursor: pointer; font-weight: bold !important; }
-        button.btn-danger { background: #ff5252 !important; color: #fff !important; }
-        .admin-item-block { background: #222 !important; border: 1px solid #333 !important; padding: 15px !important; margin-bottom: 15px !important; border-radius: 10px !important; }
+        /* ── Estilos específicos del editor de medicina ───────────────── */
+
+        /* Badge de medicina en el topbar */
+        .med-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75em;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            background: <?php echo $med_config['accent_bg']; ?>;
+            border: 1px solid <?php echo $med_config['border']; ?>;
+            color: <?php echo $med_config['text']; ?>;
+        }
+
+        /* Encabezado de sección dentro del editor */
+        .editor-section-title {
+            font-size: 0.7em;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--text-dim);
+            margin: 28px 0 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Subencabezado dentro de una card */
+        .sub-title {
+            font-size: 0.72em;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: <?php echo $med_config['accent']; ?>;
+            margin: 20px 0 10px;
+            padding-top: 18px;
+            border-top: 1px solid var(--border);
+        }
+        .sub-title:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+
+        textarea {
+            resize: vertical;
+            line-height: 1.6;
+        }
+
+        /* Botón guardar grande */
+        .btn-save {
+            background: var(--green);
+            color: #0a0a0a;
+            width: 100%;
+            padding: 13px 20px;
+            font-size: 0.9em;
+            letter-spacing: 1px;
+            margin-top: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+        .btn-save:hover {
+            background: #a4cc45;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(139,174,57,0.3);
+        }
+        .btn-save:active { transform: translateY(0); }
+
+        /* Galería de ítems */
+        .gallery-list { display: flex; flex-direction: column; gap: 12px; }
+
+        .gallery-item {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 16px;
+            background: #111;
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            transition: border-color var(--transition);
+        }
+        .gallery-item:hover { border-color: <?php echo $med_config['border']; ?>; }
+
+        .gallery-preview {
+            border-radius: 7px;
+            overflow: hidden;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100px;
+            border: 1px solid var(--border);
+            position: relative;   /* needed for badge overlay */
+        }
+        .gallery-preview img,
+        .gallery-preview video {
+            width: 100%;
+            height: 100%;
+            max-height: 140px;
+            object-fit: cover;
+            display: block;
+        }
+
+        /* ── Media type badge (VIDEO / FOTO) in gallery preview ────── */
+        .media-badge {
+            position: absolute;
+            top: 7px;
+            right: 7px;
+            font-size: 0.60em;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            padding: 2px 7px;
+            border-radius: 5px;
+            pointer-events: none;
+            z-index: 2;
+        }
+        .media-badge-video {
+            background: rgba(0, 0, 0, 0.72);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+        }
+        .media-badge-image {
+            background: rgba(0, 0, 0, 0.50);
+            color: rgba(255, 255, 255, 0.55);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+        }
+
+        /* ── Live upload preview ────────────────────────────────────── */
+        .upload-preview-wrap {
+            display: none;
+            margin-top: 12px;
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            background: #000;
+            border: 1px solid var(--border-light);
+            max-height: 200px;
+            text-align: center;
+        }
+        .upload-preview-wrap.visible { display: block; }
+        .upload-preview-wrap img,
+        .upload-preview-wrap video {
+            max-width: 100%;
+            max-height: 200px;
+            object-fit: contain;
+            display: block;
+            margin: 0 auto;
+        }
+
+        .gallery-content {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .gallery-path {
+            font-size: 0.7em;
+            color: var(--text-dim);
+            font-family: monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .gallery-content textarea {
+            flex: 1;
+            min-height: 60px;
+            font-size: 0.85em;
+        }
+        .gallery-actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .btn-order {
+            background: var(--card);
+            border: 1px solid var(--border-light);
+            color: var(--text-dim);
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 0.8em;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all var(--transition);
+        }
+        .btn-order:hover { border-color: var(--green-dim); color: var(--text); }
+
+        /* Botón sync disco */
+        .btn-sync {
+            background: transparent;
+            border: 1px solid var(--border-light);
+            color: var(--text-dim);
+            padding: 9px 16px;
+            border-radius: var(--radius-sm);
+            font-size: 0.8em;
+            cursor: pointer;
+            font-family: inherit;
+            width: 100%;
+            margin-top: 12px;
+            transition: all var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .btn-sync:hover { border-color: var(--green-dim); color: var(--text); }
+
+        .hint {
+            font-size: 0.74em;
+            color: var(--text-dim);
+            margin-top: 6px;
+        }
+
+        @media (max-width: 600px) {
+            .gallery-item { grid-template-columns: 1fr; }
+            .gallery-preview { max-height: 180px; }
+            .gallery-preview img, .gallery-preview video { max-height: 180px; }
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <a href="admin_ritual.php" class="back">⬅ Volver al Panel Maestro</a>
-        <h1>Editando: <?php echo ucfirst($medicina_slug); ?></h1>
 
-        <?php if ($upload_msg) echo "<p style='color:#8bae39; background: rgba(139,174,57,0.1); padding: 10px; border-radius: 5px;'>" . htmlspecialchars($upload_msg) . "</p>"; ?>
-        <?php if ($upload_err) echo "<p style='color:#ff5252; background: rgba(255,82,82,0.1); padding: 10px; border-radius: 5px;'>" . htmlspecialchars($upload_err) . "</p>"; ?>
-
-        <div class="admin-area">
-            <?php include __DIR__ . '/medicina_admin_inc.php'; ?>
-        </div>
+<!-- ── TOPBAR ── -->
+<header class="topbar">
+    <div class="topbar-brand" style="gap: 14px;">
+        <a href="admin_ritual.php" class="btn-pub" style="font-size:0.9em; display:flex; align-items:center; gap:5px;">
+            ← Dashboard
+        </a>
+        <span style="color: var(--border-light);">|</span>
+        <span class="med-badge">
+            <?php echo $med_config['icon']; ?>
+            <?php echo $med_config['label']; ?>
+        </span>
     </div>
+    <div class="topbar-right">
+        <a href="?logout=1" class="btn-logout">Salir</a>
+    </div>
+</header>
+
+<main class="dashboard">
+
+    <!-- ── ALERTAS ── -->
+    <?php if ($upload_msg): ?>
+        <div class="alert alert-success">✓ <?php echo htmlspecialchars($upload_msg); ?></div>
+    <?php endif; ?>
+    <?php if ($upload_err): ?>
+        <div class="alert alert-error">✕ <?php echo htmlspecialchars($upload_err); ?></div>
+    <?php endif; ?>
+
+    <!-- ── CONTENIDO DEL EDITOR ── -->
+    <?php include __DIR__ . '/medicina_admin_inc.php'; ?>
+
+</main>
+
 </body>
 </html>
