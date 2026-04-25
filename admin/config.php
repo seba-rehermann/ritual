@@ -1,4 +1,6 @@
 <?php
+define('BASE_URL_PUBLIC', 'https://ritual.sebaji.org');
+define('BASE_URL_ADMIN', 'https://admin-ritual.sebaji.org');
 /**
  * Configuración y secretos.
  * Definir las variables de entorno en docker-compose.yml (sección environment:)

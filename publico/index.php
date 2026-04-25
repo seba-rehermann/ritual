@@ -122,8 +122,7 @@ if (isset($_POST['send_msg'])) {
 /* ── Data ── */
 $links = file_exists($yt_file) ? file($yt_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
 
-$admin_host = explode(':', $_SERVER['HTTP_HOST'] ?? 'localhost')[0];
-$admin_url  = 'http://' . $admin_host . ':8082/admin_ritual.php';
+$admin_url = BASE_URL_ADMIN . '/admin_ritual.php';
 
 $musica_dir = __DIR__ . '/musica/home/';
 $canciones  = [];
