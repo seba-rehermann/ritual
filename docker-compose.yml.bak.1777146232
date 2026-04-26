@@ -11,7 +11,6 @@ services:
       - ./compartido/musica:/var/www/html/musica
       - ./compartido/data:/var/www/html/data
       - ./publico/mis_ajustes.ini:/usr/local/etc/php/conf.d/mis_ajustes.ini
-      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/index.php"]
