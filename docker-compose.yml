@@ -13,12 +13,17 @@ services:
       - ./publico/mis_ajustes.ini:/usr/local/etc/php/conf.d/mis_ajustes.ini
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/index.php"]
-      interval: 30s
+      test: ["CMD", "curl", "-fsS", "http://localhost/docker-health.txt"]
+      interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
 
   web_admin:
     build: .
@@ -33,9 +38,14 @@ services:
       - ./compartido/data:/var/www/html/data
       - ./admin/mis_ajustes.ini:/usr/local/etc/php/conf.d/mis_ajustes.ini
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/admin_ritual.php"]
-      interval: 30s
+      test: ["CMD", "curl", "-fsS", "http://localhost/docker-health.txt"]
+      interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s

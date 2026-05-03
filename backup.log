@@ -1,2 +1,24 @@
-Iniciando respaldo a Google Drive: Sat Apr 25 10:36:39 AM PDT 2026
-Respaldo finalizado: Sat Apr 25 10:36:57 AM PDT 2026
+Transferred:   	          0 B / 0 B, -, 0 B/s, ETA -
+Elapsed time:         1.3sTransferred:   	         28 B / 28 B, 100%, 0 B/s, ETA -
+Checks:                 5 / 5, 100%
+Transferred:            0 / 2, 0%
+Elapsed time:         1.8s
+Transferring:
+ *                              data/visitas.txt:100% /4, 0/s, -
+ *                            data/presencia.txt:100% /24, 0/s, -Transferred:   	         28 B / 28 B, 100%, 0 B/s, ETA -
+Checks:                12 / 12, 100%
+Transferred:            0 / 2, 0%
+Elapsed time:         2.3s
+Transferring:
+ *                              data/visitas.txt:100% /4, 0/s, -
+ *                            data/presencia.txt:100% /24, 0/s, -Transferred:   	         28 B / 28 B, 100%, 28 B/s, ETA 0s
+Checks:                12 / 12, 100%
+Transferred:            0 / 2, 0%
+Elapsed time:         2.8s
+Transferring:
+ *                              data/visitas.txt:100% /4, 3/s, 0s
+ *                            data/presencia.txt:100% /24, 23/s, 0sTransferred:   	         28 B / 28 B, 100%, 28 B/s, ETA 0s
+Checks:                12 / 12, 100%
+Transferred:            2 / 2, 100%
+Elapsed time:         3.2s
+Respaldo finalizado: Sun Apr 26 04:00:05 AM -03 2026

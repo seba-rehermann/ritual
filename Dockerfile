@@ -3,7 +3,11 @@ FROM php:8.2-apache
 # Habilitar módulos Apache necesarios
 RUN a2enmod rewrite deflate expires headers
 
-# Copiar configuración personalizada que activa AllowOverride y desactiva Indexes
+# Override del vhost por defecto: omitir docker-health.txt del CustomLog combinado (menos churn en disco/CPU por healthchecks).
+COPY docker/000-default.conf /etc/apache2/sites-available/000-default.conf
+
+# Permite que los .htaccess de cada contenedor tengan efecto
+# y desactiva el listado de directorios en todo el webroot.
 COPY docker/apache.conf /etc/apache2/conf-available/ritual.conf
 RUN a2enconf ritual
 
