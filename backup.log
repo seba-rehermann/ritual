@@ -1,24 +1,2 @@
-Transferred:   	          0 B / 0 B, -, 0 B/s, ETA -
-Elapsed time:         1.3sTransferred:   	         28 B / 28 B, 100%, 0 B/s, ETA -
-Checks:                 5 / 5, 100%
-Transferred:            0 / 2, 0%
-Elapsed time:         1.8s
-Transferring:
- *                              data/visitas.txt:100% /4, 0/s, -
- *                            data/presencia.txt:100% /24, 0/s, -Transferred:   	         28 B / 28 B, 100%, 0 B/s, ETA -
-Checks:                12 / 12, 100%
-Transferred:            0 / 2, 0%
-Elapsed time:         2.3s
-Transferring:
- *                              data/visitas.txt:100% /4, 0/s, -
- *                            data/presencia.txt:100% /24, 0/s, -Transferred:   	         28 B / 28 B, 100%, 28 B/s, ETA 0s
-Checks:                12 / 12, 100%
-Transferred:            0 / 2, 0%
-Elapsed time:         2.8s
-Transferring:
- *                              data/visitas.txt:100% /4, 3/s, 0s
- *                            data/presencia.txt:100% /24, 23/s, 0sTransferred:   	         28 B / 28 B, 100%, 28 B/s, ETA 0s
-Checks:                12 / 12, 100%
-Transferred:            2 / 2, 100%
-Elapsed time:         3.2s
-Respaldo finalizado: Sun Apr 26 04:00:05 AM -03 2026
+2026/05/03 04:00:07 Failed to create file system for "google_drive:Respaldo_Ritual_Optiplex": couldn't find root directory ID: Get "https://www.googleapis.com/drive/v3/files/root?alt=json&fields=id&prettyPrint=false&supportsAllDrives=true": couldn't fetch token - maybe it has expired? - refresh with "rclone config reconnect google_drive:": oauth2: "invalid_grant" "Token has been expired or revoked."
+Respaldo finalizado: Sun May  3 04:00:07 AM -03 2026
